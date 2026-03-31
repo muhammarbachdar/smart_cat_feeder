@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "author": "M AMMAR RAMADAN BACHDAR",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-devkit-c-v4", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    {
+      "type": "wokwi-servo",
+      "id": "servo1",
+      "top": 7.6,
+      "left": 201.6,
+      "attrs": { "hornColor": "red" }
+    },
+    {
+      "type": "wokwi-hx711",
+      "id": "cell1",
+      "top": -93.4,
+      "left": 204.2,
+      "attrs": { "type": "5kg" }
+    },
+    { "type": "wokwi-hc-sr04", "id": "ultrasonic1", "top": 126.3, "left": 207.1, "attrs": {} },
+    {
+      "type": "wokwi-pir-motion-sensor",
+      "id": "pir1",
+      "top": -226.4,
+      "left": 203.82,
+      "attrs": {}
+    },
+    { "type": "wokwi-dht22", "id": "dht1", "top": -345.3, "left": 109.8, "attrs": {} }
+  ],
+  "connections": [
+    [ "esp:TX", "$serialMonitor:RX", "", [] ],
+    [ "esp:RX", "$serialMonitor:TX", "", [] ],
+    [ "servo1:PWM", "esp:18", "green", [ "h-19.2", "v29" ] ],
+    [ "cell1:DT", "esp:21", "green", [ "h-28.8", "v133.9" ] ],
+    [ "cell1:SCK", "esp:22", "green", [ "h-19.2", "v95.2" ] ],
+    [ "ultrasonic1:TRIG", "esp:5", "green", [ "v19.2", "h-86.8", "v-124.8" ] ],
+    [ "ultrasonic1:ECHO", "esp:17", "green", [ "v28.8", "h-106.4", "v-124.8" ] ],
+    [ "pir1:OUT", "esp:19", "green", [ "v19.2", "h-86.54", "v211.2" ] ],
+    [ "cell1:VCC", "esp:3V3", "red", [ "h-220.8", "v67.2" ] ],
+    [ "cell1:GND", "esp:GND.1", "black", [ "h-230.4", "v220.5" ] ],
+    [ "servo1:GND", "esp:GND.3", "black", [ "h-86.4", "v28.8" ] ],
+    [ "ultrasonic1:GND", "esp:GND.3", "black", [ "v38.4", "h-126", "v-172.8" ] ],
+    [ "servo1:V+", "esp:5V", "green", [ "h-57.6", "v-86.3", "h-172.8", "v220.8" ] ],
+    [ "pir1:GND", "esp:GND.2", "black", [ "v28.8", "h-158.7" ] ],
+    [ "pir1:VCC", "esp:5V", "red", [ "h-278.4", "v336" ] ],
+    [ "ultrasonic1:VCC", "esp:5V", "red", [ "v9.6", "h-105.6", "v-240", "h-220.8", "v211.2" ] ],
+    [ "dht1:GND", "esp:GND.2", "black", [ "v57.6", "h-52.84" ] ],
+    [ "dht1:VCC", "esp:5V", "red", [ "h-182.4", "v432" ] ],
+    [ "dht1:SDA", "esp:33", "green", [ "h-201.5", "v326.4" ] ]
+  ],
+  "dependencies": {}
+}
