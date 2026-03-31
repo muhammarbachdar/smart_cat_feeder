@@ -327,7 +327,7 @@ int getFoodLevel() {
   if (duration == 0) return 0;
   
   int distance = duration * 0.034 / 2;
-  int percent = map(distance, 2, 20, 100, 0);
+  int percent = map(distance, 2, 50, 100, 0);
   percent = constrain(percent, 0, 100);
   
   static int lastPercent = 50;

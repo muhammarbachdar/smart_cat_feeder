@@ -11,7 +11,7 @@ import {
   X,
   AlertCircle
 } from 'lucide-react';
-import { ref, onValue, set, push, remove } from 'firebase/database';
+import { ref, push, set, update, remove, onValue } from 'firebase/database'; 
 import { database } from '../firebase/config';
 
 const SchedulePage = ({ userId, petName = 'Maximus', isDeviceConnected = false, connectedDeviceId }) => {
@@ -56,6 +56,15 @@ const SchedulePage = ({ userId, petName = 'Maximus', isDeviceConnected = false, 
   const handleAddSchedule = async () => {
     if (!connectedDeviceId) return;
     
+    if (formData.amount < 10 || formData.amount > 200) {
+      alert("Jumlah pakan harus antara 10g - 200g");
+      return;
+    }
+    if (!formData.days.some(d => d)) {
+      alert("Pilih minimal 1 hari aktif");
+      return;
+    }
+
     const schedulesRef = ref(database, `devices/${connectedDeviceId}/schedules`);
     const newScheduleRef = push(schedulesRef);
     
@@ -78,10 +87,17 @@ const SchedulePage = ({ userId, petName = 'Maximus', isDeviceConnected = false, 
 
   const handleUpdateSchedule = async () => {
     if (!connectedDeviceId || !editingSchedule) return;
-    
+    if (formData.amount < 10 || formData.amount > 200) {
+      alert("Jumlah pakan harus antara 10g - 200g");
+      return;
+    }
+    if (!formData.days.some(d => d)) {
+      alert("Pilih minimal 1 hari aktif");
+      return;
+    } 
     const scheduleRef = ref(database, `devices/${connectedDeviceId}/schedules/${editingSchedule.id}`);
     
-    await set(scheduleRef, {
+    await update(scheduleRef, {
       time: formData.time,
       amount: formData.amount,
       days: formData.days,
@@ -111,8 +127,7 @@ const SchedulePage = ({ userId, petName = 'Maximus', isDeviceConnected = false, 
     if (!connectedDeviceId) return;
     
     const scheduleRef = ref(database, `devices/${connectedDeviceId}/schedules/${schedule.id}`);
-    await set(scheduleRef, {
-      ...schedule,
+    await update(scheduleRef, {
       enabled: !schedule.enabled
     });
   };

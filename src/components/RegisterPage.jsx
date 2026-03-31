@@ -84,7 +84,7 @@ const RegisterPage = ({ onRegister, onSwitchToLogin }) => {
       onRegister({
         uid: userId,
         email: email,
-        petName: petName || 'Maximus'
+        petName: petName || 'Pet Parent'
       });
       
     } catch (error) {

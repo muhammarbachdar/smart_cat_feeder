@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { Mail, Lock, PawPrint, Dog, Eye, EyeOff } from 'lucide-react';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
 import { auth } from '../firebase/config';
 import loginImg from '../assets/img/login.png';
 
-const LoginPage = ({ onLogin, onSwitchToRegister }) => {
+
+  const LoginPage = ({ onLogin, onSwitchToRegister }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [petName, setPetName] = useState('');
@@ -15,6 +16,20 @@ const LoginPage = ({ onLogin, onSwitchToRegister }) => {
   const validateEmail = (email) => {
     const regex = /^[^\s@]+@([^\s@]+\.)+[^\s@]+$/;
     return regex.test(email);
+  };
+
+  const handleResetPassword = async () => {
+    if (!email) {
+      alert("Tolong ketik email Anda dulu di kolom Email sebelum klik Lupa Password!");
+      return;
+    }
+    try {
+      await sendPasswordResetEmail(auth, email);
+      alert("Link reset password berhasil dikirim! Silakan cek Inbox atau folder Spam email Anda.");
+    } catch (error) {
+      console.error("Reset password error:", error);
+      alert("Gagal mengirim email reset. Pastikan email Anda terdaftar.");
+    }
   };
 
   const handleLogin = async () => {
@@ -45,7 +60,7 @@ const LoginPage = ({ onLogin, onSwitchToRegister }) => {
       onLogin({
         uid: user.uid,
         email: user.email,
-        petName: petName || user.displayName || 'Maximus'
+        petName: petName || user.displayName || 'Pet Parent'
       });
       
     } catch (error) {
@@ -203,6 +218,17 @@ const LoginPage = ({ onLogin, onSwitchToRegister }) => {
                     <p className="text-red-500 text-xs mt-1">{errors.password}</p>
                   )}
                 </div>
+
+                <div className="flex justify-end mt-1 mb-2">
+                  <button 
+                    type="button" 
+                    onClick={handleResetPassword}
+                    className="text-sm text-blue-500 hover:text-blue-700 font-medium transition"
+                  >
+                    Lupa Password?
+                  </button>
+                </div>
+                {/* ---------------------------- */}
 
                 {/* Pet Name - Optional */}
                 <div>
