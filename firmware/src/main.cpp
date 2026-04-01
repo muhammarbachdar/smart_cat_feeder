@@ -25,12 +25,12 @@ FirebaseConfig config;
 
 // PIN
 const int PIN_SERVO = 18;
-const int PIN_PIR = 19;
-const int DT_PIN = 21;
-const int SCK_PIN = 22;
-const int TRIG_PIN = 5;
-const int ECHO_PIN = 17;
-const int DHTPIN = 33;     // Pin untuk DHT22
+const int PIN_PIR   = 19;
+const int DT_PIN    = 21;
+const int SCK_PIN   = 22;
+const int TRIG_PIN  = 5;
+const int ECHO_PIN  = 17;
+const int DHTPIN    = 33;
 #define DHTTYPE DHT22
 
 Servo feederServo;
@@ -66,8 +66,15 @@ bool skipNextSchedule = false;
 String skippedScheduleId = "";
 unsigned long lastReconnectAttempt = 0;
 
+// ✅ FIX #3: State variables untuk non-blocking servo
+// Menggantikan peran delay() agar CPU tetap bebas saat servo berputar
+unsigned long servoStartTime    = 0;
+int           servoDurationLeft = 0;
+bool          servoActive       = false;
+
 // Deklarasi fungsi
 void feedNow(String mode, int amount);
+void checkServoState();
 void recordFeedingHistory(int amount);
 void loadSchedules();
 void loadSettings();
@@ -80,6 +87,7 @@ int getCurrentDay();
 int convertRSSItoPercent(int rssi);
 int calculateServoDurationMs(int amount);
 void ensureConnectivity();
+
 int calculateServoDurationMs(int amount) {
   int safeAmount = constrain(amount, 0, 200);
   if (safeAmount <= 0) return 0;
@@ -130,25 +138,40 @@ int getCurrentDay() {
 }
 
 void loadSchedules() {
-  String path = "/devices/" + deviceId + "/schedules";
+  String path = String("/devices/") + deviceId + "/schedules";
   
   if (Firebase.getJSON(firebaseData, path)) {
     String jsonStr;
     firebaseData.jsonObject().toString(jsonStr, true);
     
     DynamicJsonDocument doc(4096);
-    deserializeJson(doc, jsonStr);
-    
+
+    // ✅ FIX #1 (a): Tangkap error parsing JSON sebelum lanjut
+    // Jika data Firebase korup atau formatnya salah, kita skip daripada crash
+    DeserializationError err = deserializeJson(doc, jsonStr);
+    if (err) {
+      Serial.printf("❌ JSON parse error: %s\n", err.c_str());
+      return;
+    }
+
     JsonObject obj = doc.as<JsonObject>();
     scheduleCount = 0;
     
     for (JsonPair kv : obj) {
+      // ✅ FIX #1 (b): Hard limit guard — hentikan loop jika array sudah penuh
+      // Tanpa ini, data ke-11 dst akan overwrite memori di luar schedules[10],
+      // menyebabkan stack corruption dan ESP32 restart secara acak.
+      if (scheduleCount >= 10) {
+        Serial.println("⚠️ Schedule limit reached (max 10). Extra entries ignored.");
+        break;
+      }
+
       String key = kv.key().c_str();
       JsonObject scheduleObj = kv.value().as<JsonObject>();
       
-      schedules[scheduleCount].id = key;
-      schedules[scheduleCount].time = scheduleObj["time"].as<String>();
-      schedules[scheduleCount].amount = scheduleObj["amount"].as<int>();
+      schedules[scheduleCount].id      = key;
+      schedules[scheduleCount].time    = scheduleObj["time"].as<String>();
+      schedules[scheduleCount].amount  = scheduleObj["amount"].as<int>();
       schedules[scheduleCount].enabled = scheduleObj["enabled"].as<bool>();
       
       JsonArray daysArray = scheduleObj["days"].as<JsonArray>();
@@ -164,7 +187,7 @@ void loadSchedules() {
 }
 
 void loadSettings() {
-  String path = "/devices/" + deviceId + "/settings";
+  String path = String("/devices/") + deviceId + "/settings";
   
   if (Firebase.getJSON(firebaseData, path)) {
     FirebaseJson json = firebaseData.jsonObject();
@@ -182,7 +205,7 @@ void loadSettings() {
 }
 
 void recordFeedingHistory(int amount) {
-  String path = "/devices/" + deviceId + "/feedingHistory";
+  String path = String("/devices/") + deviceId + "/feedingHistory";
   
   FirebaseJson json;
   json.add("timestamp", (int)time(nullptr));
@@ -194,54 +217,77 @@ void recordFeedingHistory(int amount) {
   }
 }
 
+// ✅ FIX #3 (lanjutan): Fungsi pemeriksa state servo
+// Dipanggil di awal setiap iterasi loop() sebagai pengganti delay().
+// Servo dihentikan tepat waktu tanpa memblokir CPU sama sekali.
+void checkServoState() {
+  if (!servoActive) return;
+
+  if (millis() - servoStartTime >= (unsigned long)servoDurationLeft) {
+    feederServo.write(0); // Hentikan servo
+    servoActive  = false;
+    isFeedingNow = false;
+
+    String statusPath = String("/devices/") + deviceId + "/commands/status";
+    Firebase.setString(firebaseData, statusPath, "idle");
+    Serial.println("✅ Feeding completed! (non-blocking)");
+  }
+}
+
 void feedNow(String mode, int amount) {
   if (isFeedingNow) {
     Serial.println("⚠️ Already feeding, skipping...");
     return;
   }
   
-  isFeedingNow = true;
+  isFeedingNow   = true;
   int feedAmount = constrain(amount, 0, 200);
-  int servoDurationMs = calculateServoDurationMs(feedAmount);
+  int durationMs = calculateServoDurationMs(feedAmount);
 
-  Serial.print("🚀 ");
-  Serial.printf("%s | amount=%dg | servo=%dms\n", mode.c_str(), feedAmount, servoDurationMs);
-  
-  String path = "/devices/" + deviceId + "/commands/status";
-  Firebase.setString(firebaseData, path, "feeding");
+  Serial.printf("🚀 %s | amount=%dg | servo=%dms\n",
+                mode.c_str(), feedAmount, durationMs);
 
-  if (feedAmount <= 0 || servoDurationMs <= 0) {
+  String statusPath = String("/devices/") + deviceId + "/commands/status";
+  Firebase.setString(firebaseData, statusPath, "feeding");
+
+  if (feedAmount <= 0 || durationMs <= 0) {
     Serial.println("⚠️ Feed amount is 0g, skipping servo action.");
-    Firebase.setString(firebaseData, path, "idle");
+    Firebase.setString(firebaseData, statusPath, "idle");
     isFeedingNow = false;
     return;
   }
-  
+
+  // ✅ FIX #3: Mulai servo dan catat waktu mulai — TANPA delay()
+  // CPU langsung kembali ke loop() sehingga ESP32 tetap bisa:
+  // - Membaca command Firebase berikutnya
+  // - Menjalankan ensureConnectivity()
+  // - Me-refresh sensor data
+  // Servo dihentikan oleh checkServoState() saat durasinya terpenuhi.
   feederServo.write(90);
-  delay(servoDurationMs);
-  feederServo.write(0);
-  
-  String currentTime = getCurrentTime();
-  String feedingPath = "/devices/" + deviceId + "/feedingData";
-  Firebase.setString(firebaseData, feedingPath + "/lastMealTime", currentTime);
-  Firebase.setInt(firebaseData, feedingPath + "/lastMealAmount", feedAmount);
-  
+  servoStartTime    = millis();
+  servoDurationLeft = durationMs;
+  servoActive       = true;
+
+  String currentTime    = getCurrentTime();
+  String feedingPath    = String("/devices/") + deviceId + "/feedingData";
+  String pathMealTime   = feedingPath + "/lastMealTime";
+  String pathMealAmount = feedingPath + "/lastMealAmount";
+  Firebase.setString(firebaseData, pathMealTime,   currentTime);
+  Firebase.setInt   (firebaseData, pathMealAmount, feedAmount);
+
   // Catat feeding history (HANYA SEKALI di sini)
-  String historyPath = "/devices/" + deviceId + "/feedingHistory";
+  String historyPath = String("/devices/") + deviceId + "/feedingHistory";
   FirebaseJson historyJson;
   historyJson.add("timestamp", (int)time(nullptr));
-  historyJson.add("amount", feedAmount);
-  historyJson.add("date", currentTime);
-  historyJson.add("mode", mode);
-
+  historyJson.add("amount",    feedAmount);
+  historyJson.add("date",      currentTime);
+  historyJson.add("mode",      mode);
   if (Firebase.pushJSON(firebaseData, historyPath, historyJson)) {
     Serial.println("📝 Feeding history saved!");
   }
-  
-  Firebase.setString(firebaseData, path, "idle");
-  Serial.println("✅ Feeding completed!");
-  
-  isFeedingNow = false;
+
+  // Catatan: isFeedingNow tetap true sampai checkServoState() menyelesaikannya
+  Serial.println("🔄 Servo running... (non-blocking, CPU free)");
 }
 
 void checkAndRunSchedules() {
@@ -283,7 +329,7 @@ void checkAndRunSchedules() {
       continue;
     }
     
-    int scheduleHour = schedules[i].time.substring(0, 2).toInt();
+    int scheduleHour   = schedules[i].time.substring(0, 2).toInt();
     int scheduleMinute = schedules[i].time.substring(3, 5).toInt();
     
     if (currentHour == scheduleHour && 
@@ -327,11 +373,11 @@ int getFoodLevel() {
   if (duration == 0) return 0;
   
   int distance = duration * 0.034 / 2;
-  int percent = map(distance, 2, 50, 100, 0);
-  percent = constrain(percent, 0, 100);
+  int percent  = map(distance, 2, 50, 100, 0);
+  percent      = constrain(percent, 0, 100);
   
   static int lastPercent = 50;
-  percent = (lastPercent * 0.7) + (percent * 0.3);
+  percent    = (lastPercent * 0.7) + (percent * 0.3);
   lastPercent = percent;
   
   return percent;
@@ -363,14 +409,20 @@ void setup() {
   feederServo.write(0);
   
   scale.begin(DT_PIN, SCK_PIN);
-  scale.set_scale(1.0);
-  scale.tare();
+  // --- KALIBRASI HX711 ---
+  // TODO: [HARDWARE] Ganti angka ini pakai hasil kalibrasi asli nanti!
+  float calibration_factor = 2280.00; 
   
-  dht.begin();  // Inisialisasi DHT22
+  scale.set_scale(calibration_factor);
+  scale.tare(); // Bikin wadah kosong jadi 0 Gram saat ESP32 baru nyala
+  Serial.println("⚖️ Timbangan siap!");
+
   
-  pinMode(PIN_PIR, INPUT);
-  pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);
+  dht.begin();
+  
+  pinMode(PIN_PIR,   INPUT);
+  pinMode(TRIG_PIN,  OUTPUT);
+  pinMode(ECHO_PIN,  INPUT);
   
   Serial.print("Connecting to WiFi");
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -381,13 +433,28 @@ void setup() {
   Serial.println("\n✅ WiFi Connected");
   
   configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
-  Serial.println("⏰ Waiting for NTP time...");
-  int retry = 0;
-  while (time(nullptr) < 100000 && retry < 20) {
+  Serial.println("⏰ Waiting for NTP time sync...");
+
+  // ✅ FIX #2: NTP Sync Guard dengan timeout eksplisit
+  // Program TIDAK LANJUT sebelum waktu tersinkron (time > ~2023).
+  // Jika tetap di tahun 1970, checkAndRunSchedules() akan salah
+  // mencocokkan jam 00:00 dan memicu false feeding saat boot.
+  // Batas 30 detik dipilih karena NTP biasanya selesai < 5 detik di jaringan normal.
+  const unsigned long NTP_TIMEOUT_MS = 30000;
+  unsigned long ntpStart = millis();
+
+  while (time(nullptr) < 1700000000UL) { // ~November 2023 = sudah tersinkron
+    if (millis() - ntpStart > NTP_TIMEOUT_MS) {
+      // Timeout: lebih aman reboot daripada jalan dengan waktu 1970
+      Serial.println("\n❌ NTP sync timeout! Rebooting to retry...");
+      delay(1000);
+      ESP.restart();
+    }
+    Serial.print(".");
     delay(500);
-    retry++;
   }
-  Serial.printf("Current time: %s\n", getCurrentTime().c_str());
+
+  Serial.printf("\n✅ NTP synced! Current time: %s\n", getCurrentTime().c_str());
   
   config.host = FIREBASE_HOST;
   config.signer.tokens.legacy_token = FIREBASE_AUTH;
@@ -401,40 +468,128 @@ void setup() {
   Serial.printf("🔌 Device ID: %s\n", deviceId.c_str());
 }
 
+int getFoodLevelPercentage() {
+  long duration;
+  int distance;
+  int totalDistance = 0;
+  int validReads = 0;
+
+  // Baca 5 kali berturut-turut buat ngefilter data "hantu" (noise)
+  for (int i = 0; i < 5; i++) {
+    digitalWrite(TRIG_PIN, LOW);
+    delayMicroseconds(2);
+    digitalWrite(TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(TRIG_PIN, LOW);
+    
+    // Kasih timeout 30000 microsecond (30ms) biar ESP32 nggak freeze kalau sensor rusak
+    duration = pulseIn(ECHO_PIN, HIGH, 30000); 
+    
+    if (duration > 0) {
+      distance = duration * 0.034 / 2;
+      // Validasi: Jarak nggak mungkin lebih dari 400cm atau kurang dari 1cm
+      if (distance > 0 && distance < 400) { 
+        totalDistance += distance;
+        validReads++;
+      }
+    }
+    delay(10);
+  }
+
+  // Kalau sensor mati/kabel putus, anggep aja 0% biar ada alert
+  if (validReads == 0) {
+    Serial.println("⚠️ ERROR: Sensor Ultrasonik tidak merespon!");
+    return 0; 
+  }
+  
+  int avgDistance = totalDistance / validReads;
+  
+  // --- KALIBRASI TONG PAKAN ---
+  // TODO: [HARDWARE] Ganti angka ini pas alat fisik udah ada!
+  int emptyDistance = 20; // Jarak sensor ke dasar tong (Misal: 20 cm)
+  int fullDistance = 2;   // Jarak sensor ke batas pakan penuh (Misal: 2 cm)
+  
+  // Ubah jarak cm jadi persentase (0% - 100%)
+  int percentage = map(avgDistance, fullDistance, emptyDistance, 100, 0);
+  
+  // Pastikan hasil nggak minus atau lebih dari 100
+  return constrain(percentage, 0, 100); 
+}
+
+int getFoodWeightGram() {
+  if (scale.is_ready()) {
+    // Baca 5 sampel dan ambil rata-ratanya biar nggak fluktuatif
+    long currentWeight = scale.get_units(5); 
+    
+    // Guard: Kalau timbangan goyang dan minus, anggap aja 0 gram
+    if (currentWeight < 0) {
+      currentWeight = 0;
+    }
+    
+    return (int)currentWeight;
+  } else {
+    Serial.println("⚠️ ERROR: Sensor Load Cell HX711 tidak merespon!");
+    return 0;
+  }
+}
+
 void loop() {
+  // ✅ FIX #3: Harus dipanggil PERTAMA agar servo berhenti tepat waktu
+  // tanpa memblokir sisa logika loop
+  checkServoState();
+
   ensureConnectivity();
   bool canUseCloud = (WiFi.status() == WL_CONNECTED) && Firebase.ready();
 
-  float berat = scale.get_units(5);
-  if (berat < 0) berat = 0;
+  float berat = getFoodWeightGram();
   
-  int stokPakan = getFoodLevel();
-  int rssi = WiFi.RSSI();
-  int wifiPercent = convertRSSItoPercent(rssi);
-  float temperature = getTemperature();  // Baca dari DHT22
-  float humidity = getHumidity();        // Baca dari DHT22
+  int stokPakan      = getFoodLevelPercentage();
+  int rssi           = WiFi.RSSI();
+  int wifiPercent    = convertRSSItoPercent(rssi);
+  int pakanKeluar    = getFoodWeightGram();
+  float temperature  = getTemperature();
+  float humidity     = getHumidity();
   String currentTime = getCurrentTime();
   
-  String deviceStatusPath = "/devices/" + deviceId + "/deviceStatus";
-  String feedingDataPath = "/devices/" + deviceId + "/feedingData";
+  String deviceStatusPath = String("/devices/") + deviceId + "/deviceStatus";
+  String feedingDataPath  = String("/devices/") + deviceId + "/feedingData";
   
   if (canUseCloud) {
-    Firebase.setBool(firebaseData, deviceStatusPath + "/isOnline", true);
-    Firebase.setInt(firebaseData, deviceStatusPath + "/batteryLevel", 85);
-    Firebase.setBool(firebaseData, deviceStatusPath + "/isCharging", false);
-    Firebase.setInt(firebaseData, deviceStatusPath + "/wifiStrength", wifiPercent);
-    
-    Firebase.setFloat(firebaseData, feedingDataPath + "/bowlWeight", berat);
-    Firebase.setInt(firebaseData, feedingDataPath + "/tankLevel", stokPakan);
-    Firebase.setFloat(firebaseData, feedingDataPath + "/temperature", temperature);
-    Firebase.setFloat(firebaseData, feedingDataPath + "/humidity", humidity);
-    Firebase.setString(firebaseData, feedingDataPath + "/lastUpdate", currentTime);
+    String pathIsOnline    = deviceStatusPath + "/isOnline";
+    String pathBattery     = deviceStatusPath + "/batteryLevel";
+    String pathCharging    = deviceStatusPath + "/isCharging";
+    String pathWifi        = deviceStatusPath + "/wifiStrength";
+    String pathBowl        = feedingDataPath  + "/bowlWeight";
+    String pathTank        = feedingDataPath  + "/tankLevel";
+    String pathTemp        = feedingDataPath  + "/temperature";
+    String pathHumidity    = feedingDataPath  + "/humidity";
+    String pathLastUpdate  = feedingDataPath  + "/lastUpdate";
+    String pathLowStock    = String("/devices/") + deviceId + "/alerts/lowStock";
+
+    Firebase.setBool(firebaseData, pathIsOnline, true);
+
+    // TODO: [HARDWARE] batteryLevel masih hardcoded 85%.
+    // Implementasi: baca tegangan baterai via ADC (misal GPIO34 + voltage divider),
+    // lalu map ke persentase. Contoh: map(analogRead(PIN_BATT), 0, 4095, 0, 100)
+    Firebase.setInt(firebaseData, pathBattery, 85);
+
+    // TODO: [HARDWARE] isCharging masih hardcoded false.
+    // Implementasi: baca pin charging indicator dari modul TP4056/BMS.
+    // Pin CHRG biasanya LOW saat charging. Contoh: !digitalRead(PIN_CHRG)
+    Firebase.setBool(firebaseData, pathCharging, false);
+
+    Firebase.setInt   (firebaseData, pathWifi,       wifiPercent);
+    Firebase.setFloat (firebaseData, pathBowl,       berat);
+    Firebase.setInt   (firebaseData, pathTank,       stokPakan);
+    Firebase.setFloat (firebaseData, pathTemp,       temperature);
+    Firebase.setFloat (firebaseData, pathHumidity,   humidity);
+    Firebase.setString(firebaseData, pathLastUpdate, currentTime);
     
     if (stokPakan < lowStockAlert && stokPakan > 0) {
-      Firebase.setString(firebaseData, "/devices/" + deviceId + "/alerts/lowStock", "true");
+      Firebase.setString(firebaseData, pathLowStock, "true");
       Serial.printf("⚠️ Low stock alert! Only %d%% remaining\n", stokPakan);
     } else {
-      Firebase.setString(firebaseData, "/devices/" + deviceId + "/alerts/lowStock", "false");
+      Firebase.setString(firebaseData, pathLowStock, "false");
     }
   } else {
     Serial.println("⚠️ Cloud unavailable, running with local schedule cache.");
@@ -455,25 +610,25 @@ void loop() {
   }
   
   // ==================== BACA MANUAL FEED COMMAND ====================
-  String commandPath = "/devices/" + deviceId + "/commands/feedNow";
-  String timestampPath = "/devices/" + deviceId + "/commands/timestamp";
-  String skipNextPath = "/devices/" + deviceId + "/commands/skipNext";
+  String commandPath   = String("/devices/") + deviceId + "/commands/feedNow";
+  String timestampPath = String("/devices/") + deviceId + "/commands/timestamp";
+  String skipNextPath  = String("/devices/") + deviceId + "/commands/skipNext";
   
   if (canUseCloud && !isFeedingNow) {
     if (Firebase.getBool(firebaseData, commandPath)) {
       if (firebaseData.boolData() == true) {
         int currentTimestamp = 0;
-        int manualAmount = 50;
+        int manualAmount     = 50;
         if (Firebase.getInt(firebaseData, timestampPath)) {
           currentTimestamp = firebaseData.intData();
         }
-        if (Firebase.getInt(firebaseData, "/devices/" + deviceId + "/commands/amount")) {
+        if (Firebase.getInt(firebaseData, String("/devices/") + deviceId + "/commands/amount")) {
           manualAmount = firebaseData.intData();
         }
         
         if (currentTimestamp != lastCommandTimestamp) {
           lastCommandTimestamp = currentTimestamp;
-          lastManualFeedTime = millis();
+          lastManualFeedTime   = millis();
           
           bool shouldSkip = false;
           if (Firebase.getBool(firebaseData, skipNextPath)) {
@@ -482,8 +637,8 @@ void loop() {
           
           if (shouldSkip) {
             String nextScheduleId = "";
-            long minDiff = 999999;
-            int currentDay = getCurrentDay();
+            long minDiff    = 999999;
+            int currentDay  = getCurrentDay();
             int currentHour = getCurrentTime().substring(0, 2).toInt();
             int currentMinute = getCurrentTime().substring(3, 5).toInt();
             int currentTotalMin = currentHour * 60 + currentMinute;
@@ -493,7 +648,7 @@ void loop() {
               
               for (int day = 0; day < 7; day++) {
                 if (schedules[i].days[day]) {
-                  int scheduleHour = schedules[i].time.substring(0, 2).toInt();
+                  int scheduleHour   = schedules[i].time.substring(0, 2).toInt();
                   int scheduleMinute = schedules[i].time.substring(3, 5).toInt();
                   int scheduleTotalMin = scheduleHour * 60 + scheduleMinute;
                   
@@ -508,7 +663,7 @@ void loop() {
                   }
                   
                   if (diff < minDiff && diff > 0) {
-                    minDiff = diff;
+                    minDiff       = diff;
                     nextScheduleId = schedules[i].id;
                   }
                 }
@@ -526,7 +681,7 @@ void loop() {
           feedNow("Manual Feeding", manualAmount);
         }
         
-        Firebase.setBool(firebaseData, commandPath, false);
+        Firebase.setBool(firebaseData, commandPath,  false);
         Firebase.setBool(firebaseData, skipNextPath, false);
       }
     }
