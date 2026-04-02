@@ -16,7 +16,7 @@
 
 // --- Identitas Perangkat ---
 // Ganti sesuai user ID yang login di aplikasi
-#define DEVICE_ID     "YOUR_USER_ID"
+#define DEVICE_ID     "YOUR_DEVICE"
 
 // --- NTP / Jam ---
 #define NTP_SERVER          "pool.ntp.org"
