@@ -83,66 +83,8 @@ const AnalyticsPage = ({ userId: _userId, petName = 'Maximus', connectedDeviceId
           : 'bg-red-500';
 
   // ==================== LOAD DATA FROM FIREBASE ====================
-  useEffect(() => {
-    if (!connectedDeviceId) return;
-  
-    const feedingDataRef = ref(database, `devices/${connectedDeviceId}/feedingData`);
-    const historyRef = ref(database, `devices/${connectedDeviceId}/feedingHistory`);
-    
-    // [PERBAIKAN 1] Sinkronisasi nama field: bowlWeight (double L)
-    const unsubscribeFeeding = onValue(feedingDataRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        setFeedingData({
-          bowlWeight: data.bowlWeight || data.bowWeight || 0,
-          tankLevel: data.tankLevel || 0,
-          temperature: data.temperature || 0,
-          humidity: data.humidity || 0,
-          lastMealAmount: data.lastMealAmount || 0
-        });
-      }
-    });
-    
-    // [PERBAIKAN 2] Sinkronisasi timestamp (detik → milidetik) + sorting
-    const unsubscribeHistory = onValue(historyRef, (snapshot) => {
-      const data = snapshot.val();
-      console.log("📊 Analytics - Feeding history:", data);
-      
-      if (data && typeof data === 'object') {
-        // PERBAIKAN: Konversi timestamp dari detik ke milidetik (x1000)
-        // PERBAIKAN: Urutkan data berdasarkan timestamp (sort)
-        const historyList = Object.values(data)
-          .map(item => ({
-            timestamp: (item.timestamp || 0) * 1000, // ESP32 kirim detik → konversi ke milidetik
-            amount: item.amount || 0,
-            rawDate: item.date
-          }))
-          .sort((a, b) => a.timestamp - b.timestamp); // Urutkan dari lama ke baru
-        
-        // Format tanggal untuk display
-        const formattedHistory = historyList.map(item => ({
-          ...item,
-          date: new Date(item.timestamp).toLocaleTimeString('id-ID', { 
-            hour: '2-digit', 
-            minute: '2-digit' 
-          })
-        }));
-        
-        setFeedingHistory(formattedHistory);
-        calculateWeeklyStats(historyList);
-        setRefreshKey(prev => prev + 1);
-      } else {
-        setFeedingHistory([]);
-        setWeeklyStats([]);
-      }
-      setIsLoading(false);
-    });
-    
-    return () => {
-      unsubscribeFeeding();
-      unsubscribeHistory();
-    };
-  }, [connectedDeviceId]);
+
+  const { feedingData, feedingHistory, schedules, connectedDeviceId } = useDevice();
   
   // ==================== HITUNG STATISTIK MINGGUAN ====================
   const calculateWeeklyStats = (history) => {

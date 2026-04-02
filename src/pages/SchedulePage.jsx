@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { useDevice } from '../context/DeviceContext';
 import { 
   Calendar, 
   Clock, 
@@ -11,12 +12,12 @@ import {
   X,
   AlertCircle
 } from 'lucide-react';
-import { ref, push, set, update, remove, onValue } from 'firebase/database'; 
+import { ref, push, set, update, remove } from 'firebase/database'; 
 import { database } from '../firebase/config';
 
-const SchedulePage = ({ userId, petName = 'Maximus', isDeviceConnected = false, connectedDeviceId }) => {
-  const [schedules, setSchedules] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+const SchedulePage = ({isDeviceConnected = false}) => {
+  const [schedules] = useState([]);
+  const [isLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState(null);
   
@@ -31,27 +32,8 @@ const SchedulePage = ({ userId, petName = 'Maximus', isDeviceConnected = false, 
   const daysName = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
 
   // Load schedules from Firebase
-  useEffect(() => {
-    if (!connectedDeviceId) return;
-    
-    const schedulesRef = ref(database, `devices/${connectedDeviceId}/schedules`);
-    
-    const unsubscribe = onValue(schedulesRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const schedulesList = Object.keys(data).map(key => ({
-          id: key,
-          ...data[key]
-        }));
-        setSchedules(schedulesList);
-      } else {
-        setSchedules([]);
-      }
-      setIsLoading(false);
-    });
-    
-    return () => unsubscribe();
-  }, [connectedDeviceId]);
+ 
+  const { feedingData, feedingHistory, schedules, connectedDeviceId } = useDevice();
 
   const handleAddSchedule = async () => {
     if (!connectedDeviceId) return;
