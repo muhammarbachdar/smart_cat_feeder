@@ -16,9 +16,9 @@ SmartPetFeeder v1.0 hadir sebagai solusi: perangkat feeder terhubung ke cloud, b
 ### 1) Monitoring Real-time
 - Pantau kondisi perangkat langsung dari dashboard:
   - berat pakan (load cell + HX711)
-  - suhu
-  - kelembaban
-  - status feeder
+  - suhu & kelembaban (DHT22)
+  - level pakan di tangki (Ultrasonik)
+  - status feeder & baterai
 - Semua data sinkron ke Firebase dan tampil live di frontend.
 
 <p align="center">
@@ -29,6 +29,7 @@ SmartPetFeeder v1.0 hadir sebagai solusi: perangkat feeder terhubung ke cloud, b
 - Jadwal makan otomatis dari data schedule di database.
 - Firmware melakukan pengecekan berkala agar jadwal tidak mudah terlewat.
 - Ada proteksi anti double-trigger supaya jadwal yang sama tidak jalan berulang.
+- Cooldown 5 menit setelah manual feed agar jadwal tidak bentrok.
 
 ### 3) Analitik
 - Riwayat feeding dan statistik konsumsi ditampilkan di halaman analytics.
@@ -52,14 +53,47 @@ Jadi tidak tergantung hardcode user tertentu, lebih aman untuk kolaborasi dan sc
   <img src="./images/firebase-structure.png" alt="Struktur Firebase SmartPetFeeder" width="900" />
 </p>
 
-## Arsitektur Singkat
+## Arsitektur
 
 | Layer | Teknologi |
 | :--- | :--- |
-| Frontend | React, Vite, Tailwind CSS |
+| Frontend | React, Vite, Tailwind CSS, React Router DOM |
+| State Management | React Context API (DeviceContext) |
 | Auth & Database | Firebase Authentication, Firebase Realtime Database |
 | Firmware | ESP32 (Arduino framework), Firebase ESP32 Client |
-| Hardware | ESP32, Servo, Load Cell + HX711, PIR, Ultrasonic |
+| Hardware | ESP32, Servo, Load Cell + HX711, PIR, Ultrasonik HC-SR04, DHT22 |
+
+### Struktur Frontend
+
+```
+src/
+├── context/
+│   └── DeviceContext.jsx     → Firebase listener terpusat (satu sumber data)
+├── pages/
+│   ├── DashboardPage.jsx     → Halaman utama & feed now
+│   ├── AnalyticsPage.jsx     → Statistik & grafik konsumsi
+│   ├── SchedulePage.jsx      → Manajemen jadwal makan
+│   ├── SettingsPage.jsx      → Pengaturan perangkat
+│   ├── LoginPage.jsx
+│   └── RegisterPage.jsx
+├── components/
+│   └── layout/
+│       └── AppShell.jsx      → Sidebar + routing shell
+└── firebase/
+    └── config.js
+```
+
+### Struktur Firmware
+
+```
+firmware/src/
+├── Config.h              → Pusat kendali: kredensial, pin & konstanta
+├── Sensors.h / .cpp      → HX711, DHT22, Ultrasonik, PIR
+├── Actuators.h / .cpp    → Servo (non-blocking)
+├── NetworkManager.h/.cpp → WiFi & NTP
+├── FirebaseManager.h/.cpp→ Sinkronisasi cloud, jadwal & perintah
+└── Main.cpp              → setup() & loop() yang bersih
+```
 
 <p align="center">
   <img src="./images/iot-circuit-diagram.png" alt="Rangkaian IoT SmartPetFeeder" width="900" />
@@ -73,6 +107,7 @@ Jadi tidak tergantung hardcode user tertentu, lebih aman untuk kolaborasi dan sc
 git clone https://github.com/<username>/SmartPetFeeder_Project.git
 cd SmartPetFeeder_Project
 npm install
+npm install react-router-dom
 ```
 
 ### 2. Konfigurasi Firebase frontend
@@ -89,31 +124,33 @@ Edit `src/firebase/config.js`, isi sesuai project Firebase kamu:
 
 ### 3. Konfigurasi firmware ESP32
 
-Edit `firmware/src/main.cpp`, isi:
+Edit `firmware/src/Config.h`, isi sesuai environment kamu:
 
 ```cpp
-#define FIREBASE_HOST "YOUR_FIREBASE_PROJECT_ID.firebaseio.com"
-#define FIREBASE_AUTH "YOUR_FIREBASE_DATABASE_SECRET"
-String deviceId = "YOUR_DEVICE_ID";
-```
-
-Lalu sesuaikan juga:
-
-```cpp
-#define WIFI_SSID "YOUR_WIFI_NAME"
+#define WIFI_SSID     "YOUR_WIFI_NAME"
 #define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+
+#define FIREBASE_HOST "YOUR_PROJECT.firebasedatabase.app"
+#define FIREBASE_AUTH "YOUR_DATABASE_SECRET"
+
+#define DEVICE_ID     "YOUR_DEVICE_ID"
 ```
 
-### 4. Jalankan web app
+### 4. Build & upload firmware
+
+Buka folder `firmware/` di VS Code dengan PlatformIO, lalu:
+- **Build:** `Ctrl+Shift+P` → PlatformIO: Build
+- **Upload:** `Ctrl+Shift+P` → PlatformIO: Upload
+- Atau gunakan Wokwi simulator untuk testing tanpa hardware.
+
+### 5. Jalankan web app
 
 ```bash
 npm run dev
 ```
 
-### 5. Pair user ke device
+### 6. Pair user ke device
 
-Set `users/<uid>/connectedDevice` dengan `deviceId` yang dipakai firmware.
+Set `users/<uid>/connectedDevice` dengan `deviceId` yang dipakai firmware, atau klik tombol **"Hubungkan Alat"** di halaman Dashboard.
 
 ---
-
-Kalau kamu tertarik, proyek ini bisa lanjut dikembangkan ke notifikasi mobile, OTA update firmware, dan rule keamanan database yang lebih ketat untuk production.
